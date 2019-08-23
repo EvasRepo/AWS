@@ -1,0 +1,268 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Metadata:
+  Licence: 'MIT with attributions to Eva Wan Kenobi'
+Description: 'Example Node js microservice with a RESTful API endpoints via AWS API Gateway including scalable DynamoDB with Global Indexes.'
+Resources:
+  userServicePoc:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: handler.userServicePoc
+      Runtime: nodejs8.10
+      CodeUri: .
+      Description: User service (read/write to DynamoDB) with a RESTful API endpoint using Amazon API Gateway.
+      MemorySize: 512
+      Timeout: 10
+      Events:
+        Api1:
+          Type: Api
+          Properties:
+            Path: /user
+            Method: POST
+        Api2:
+          Type: Api
+          Properties:
+            Path: /user/{itemId}
+            Method: ANY
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - 'dynamodb:DescribeTable'
+                - 'dynamodb:Query'
+                - 'dynamodb:Scan'
+                - 'dynamodb:DeleteItem'
+                - 'dynamodb:GetItem'
+                - 'dynamodb:PutItem'
+                - 'dynamodb:UpdateItem'
+              Resource:
+                'Fn::Join':
+                  - ''
+                  - - 'arn:aws:dynamodb:'
+                    - Ref: 'AWS::Region'
+                    - ':'
+                    - Ref: 'AWS::AccountId'
+                    - ':table/userServicePocTable'
+  userServicePocTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        -
+          AttributeName: 'pk'
+          AttributeType: 'S'
+        -
+          AttributeName: 'sk'
+          AttributeType: 'S'
+        -
+          AttributeName: 'data'
+          AttributeType: 'S'
+        -
+          AttributeName: 'state'
+          AttributeType: 'S'
+        -
+          AttributeName: 'isPrimary'
+          AttributeType: 'S'
+      KeySchema:
+        -
+          AttributeName: 'pk'
+          KeyType: 'HASH'
+        -
+          AttributeName: 'sk'
+          KeyType: 'RANGE'
+      GlobalSecondaryIndexes:
+        -
+          IndexName: 'sk-pk-GSI'
+          KeySchema:
+          -
+            AttributeName: 'sk'
+            KeyType: HASH
+          -
+            AttributeName: 'pk'
+            KeyType: RANGE
+          Projection:
+            ProjectionType: 'ALL'
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+        -
+          IndexName: 'sk-data-GSI'
+          KeySchema:
+          -
+            AttributeName: 'sk'
+            KeyType: HASH
+          -
+            AttributeName: 'data'
+            KeyType: RANGE
+          Projection:
+            ProjectionType: 'ALL'
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+        -
+          IndexName: 'isPrimary-data-GSI'
+          KeySchema:
+          -
+            AttributeName: 'isPrimary'
+            KeyType: HASH
+          -
+            AttributeName: 'data'
+            KeyType: RANGE
+          Projection:
+            ProjectionType: 'ALL'
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+        -
+          IndexName: 'state-sk-GSI'
+          KeySchema:
+          -
+            AttributeName: 'state'
+            KeyType: HASH
+          -
+            AttributeName: 'sk'
+            KeyType: RANGE
+          Projection:
+            ProjectionType: 'ALL'
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      Tags:
+      -
+        Key: 'Author'
+        Value: 'Eva'
+      -
+        Key: 'Reason'
+        Value: 'POC'
+  ScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          -
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'application-autoscaling.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        -
+          PolicyName: 'root'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              -
+                Effect: 'Allow'
+                Action:
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:UpdateTable'
+                  - 'cloudwatch:PutMetricAlarm'
+                  - 'cloudwatch:DescribeAlarms'
+                  - 'cloudwatch:GetMetricStatistics'
+                  - 'cloudwatch:SetAlarmState'
+                  - 'cloudwatch:DeleteAlarms'
+                Resource: '*'
+  WriteCapacityScalableTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    Properties:
+      MaxCapacity: 100
+      MinCapacity: 5
+      ResourceId: !Join
+        - /
+        - - table
+          - !Ref userServicePocTable
+      RoleARN: !GetAtt ScalingRole.Arn
+      ScalableDimension: 'dynamodb:table:WriteCapacityUnits'
+      ServiceNamespace: dynamodb
+  WriteScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: WriteAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref WriteCapacityScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: DynamoDBWriteCapacityUtilization
+  ReadCapacityScalableTarget:
+    Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+    Properties:
+      MaxCapacity: 100
+      MinCapacity: 5
+      ResourceId: !Join
+        - /
+        - - table
+          - !Ref userServicePocTable
+      RoleARN: !GetAtt ScalingRole.Arn
+      ScalableDimension: 'dynamodb:table:ReadCapacityUnits'
+      ServiceNamespace: dynamodb
+  ReadScalingPolicy:
+    Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+    Properties:
+      PolicyName: ReadAutoScalingPolicy
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ReadCapacityScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        TargetValue: 70
+        ScaleInCooldown: 60
+        ScaleOutCooldown: 60
+        PredefinedMetricSpecification:
+          PredefinedMetricType: DynamoDBReadCapacityUtilization
+  # IndexWriteCapacityScalableTarget:
+  #   Type: 'AWS::ApplicationAutoScaling::ScalableTarget'
+  #   Properties:
+  #     MaxCapacity: 100
+  #     MinCapacity: 5
+  #     ResourceId: !Join
+  #       - /
+  #       - - table
+  #         - !Ref 'userServicePocTable/index/sk-pk-GSI'
+  #     RoleARN: !GetAtt ScalingRole.Arn
+  #     ScalableDimension: "dynamodb:index:WriteCapacityUnits"
+  #     ServiceNamespace: dynamodb
+  # IndexWriteScalingPolicy:
+  #   Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+  #   Properties:
+  #     PolicyName: WriteAutoScalingPolicy
+  #     PolicyType: TargetTrackingScaling
+  #     ScalingTargetId: !Ref IndexWriteCapacityScalableTarget
+  #     TargetTrackingScalingPolicyConfiguration:
+  #       TargetValue: 70
+  #       ScaleInCooldown: 60
+  #       ScaleOutCooldown: 60
+  #       PredefinedMetricSpecification:
+  #         PredefinedMetricType: DynamoDBWriteCapacityUtilization
+  # IndexReadCapacityScalableTarget:
+  #   Type: "AWS::ApplicationAutoScaling::ScalableTarget"
+  #   Properties:
+  #    MaxCapacity: 100
+  #    MinCapacity: 5
+  #    ResourceId: !Join
+  #       - /
+  #       - - table
+  #         - !Ref 'table/userServicePocTable/index/sk-pk-GSI'
+  #    RoleARN: !GetAtt ScalingRole.Arn
+  #    ScalableDimension: "dynamodb:index:ReadCapacityUnits"
+  #    ServiceNamespace: dynamodb
+  # IndexReadScalingPolicy:
+  #   Type: 'AWS::ApplicationAutoScaling::ScalingPolicy'
+  #   Properties:
+  #     PolicyName: ReadAutoScalingPolicy
+  #     PolicyType: TargetTrackingScaling
+  #     ScalingTargetId: !Ref IndexReadCapacityScalableTarget
+  #     TargetTrackingScalingPolicyConfiguration:
+  #       TargetValue: 70
+  #       ScaleInCooldown: 60
+  #       ScaleOutCooldown: 60
+  #       PredefinedMetricSpecification:
+  #         PredefinedMetricType: DynamoDBReadCapacityUtilization
+
+
